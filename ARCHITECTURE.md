@@ -377,10 +377,14 @@ pj_out/<워크로드명>/
    전 구간 성공. 산출 데이터셋은 train 4952 / val 743 / test 247(증강 1000장 포함),
    YOLO 라벨 개수 일치, 80개 클래스 `data.yaml`, 바운딩박스 54,103개.
    stage2 는 실 CSD 에서 `mode=shared-volume` 으로 실행됐다.
-   **이 검증들은 2026-08-14 이전 클러스터에서 이뤄졌고 그 클러스터는 소멸했다** —
-   당시 남아 있던 검증 워크로드(`mte-test-001` 등)도 함께 사라졌다. 현재 클러스터
-   (8/18 재생성)에서 재확인된 것은 STATIC 분할 기준 E2E 완주이며(`server/test_k8s_integration.py`),
-   **MTE/WRR 자동 선택은 아직 재확인하지 않았다.**
+   위 검증들은 2026-08-14 이전 클러스터에서 이뤄졌고 그 클러스터는 소멸했다 —
+   당시 남아 있던 검증 워크로드(`mte-test-001` 등)도 함께 사라졌다.
+   **현재 클러스터(8/18 재생성)에서 재확인 완료**: STATIC E2E 완주
+   (`server/test_k8s_integration.py`) + MTE/WRR/AUTO E2E
+   (`server/test_k8s_algorithms.py`) — MTE 는 연속 분할(split_index>0), WRR 은
+   비연속(split_index=0, 가중치 15:4), AUTO 는 소규모 갈래로 MTE 선택.
+   AUTO 의 나머지 세 갈래는 실측 처리량에 좌우돼 E2E 로 고정할 수 없어
+   `server/test_partition_algorithms.py` 가 결정론적으로 덮는다.
    다만 **WRR 은 실행 중 재분배가 아니라 디스패치 시점의 정적 인터리브 분할**이다 —
    가중치를 바꾸면 다음 잡부터 반영되고, 진행 중인 잡은 재분배하지 않는다.
 6. **작은 데이터셋의 stratified split** — 클래스당 1~2장이면 계층 분할의 의미가

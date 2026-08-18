@@ -1,6 +1,6 @@
 # CSD 전처리 개발 현황
 
-최종 갱신: 2026-08-18 (k8s 배포·헬스체크·데이터셋 복구 + 3층 회귀 + 배포 스크립트)
+최종 갱신: 2026-08-18 (k8s 배포·헬스체크·데이터셋 복구 + 3층 회귀 + 배포 스크립트 + 분할 알고리즘 재확인)
 
 이 문서는 논문용 요약이 아니라 현재 코드 기준의 개발 현황 문서다.
 구현 범위, 최근 확인 결과, 부족한 부분, 다음 작업만 정리한다.
@@ -305,7 +305,35 @@ kubeconfig 재발급 → `csd-credentials` 시크릿 → csd-device-plugin → �
 점(`keti.re.kr/csd`)을 이스케이프하지 않으면 **오류 없이 빈 값**이 나와 "광고 안 됨"과
 구분되지 않는다. go-template 의 `index` 로 바꿨다.
 
-### 3.13 demo_data 정리
+### 3.13 분할 알고리즘 재확인
+
+8/14 이전 클러스터에서만 검증됐던 MTE/WRR 을 현재 클러스터에서 재확인했다.
+확인 방식을 두 층으로 나눴다 — AUTO 선택은 실측 처리량에 좌우돼 E2E 로는 네 갈래 중
+하나만 밟게 되고, 그 하나가 실행마다 달라지기 때문이다.
+
+**로컬 결정론 검증** — [server/test_partition_algorithms.py](server/test_partition_algorithms.py)
+(스모크 묶음에 편입, 10종이 됨)
+
+| 확인 | 내용 |
+|---|---|
+| AUTO 결정 테이블 | 네 갈래 전부 + 경계값(N=100, 비율=3.0 은 각각 MTE) |
+| 배정 불변식 | STATIC/MTE/WRR 모두 500장이 정확히 한 번씩 배정 |
+| 샤드 모양 | STATIC 연속 / MTE 만남지점+역순 / WRR 인터리브 |
+
+**클러스터 E2E** — [server/test_k8s_algorithms.py](server/test_k8s_algorithms.py)
+(`deploy.sh verify` 3층에 편입)
+
+| 요청 | 결과 | 분할 |
+|---|---|---|
+| `MTE` | MTE | cpu 0.7, split_index 14 (연속) |
+| `WRR` | WRR | cpu 0.8, split_index 0, weights 15:4 (비연속) |
+| `AUTO` (20장) | MTE | "소규모 데이터셋 (20 <= 100장)" 근거 기록 |
+
+셋 다 `Succeeded`, 샤드 산출 합계 = 입력 수, CSD 샤드 존재, CR 연쇄 GC 확인.
+MTE 두 건의 분할 비율이 다른 것(0.7 vs 0.8)은 정상이다 — 처리량 프로파일이 실행
+사이에 EWMA 로 갱신되기 때문이고, 그게 이 알고리즘의 설계다.
+
+### 3.14 demo_data 정리
 
 `demo_data` 는 현재 지원 경로와 과거 산출물을 분리했다.
 
