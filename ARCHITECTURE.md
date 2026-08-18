@@ -1,6 +1,6 @@
 # CSD 전처리 아키텍처
 
-2026-08-04 기준. 현재 진행상황 요약은 [CurrentProgress.md](CurrentProgress.md),
+2026-08-18 기준. 현재 진행상황 요약은 [CurrentProgress.md](CurrentProgress.md),
 운영 절차는 [ExecutionGuide.md](ExecutionGuide.md), 워커 계약은
 [worker/README.md](worker/README.md) 참조. 이 문서는 **구조·책임경계·정책**을 다룬다.
 
@@ -76,6 +76,28 @@ CSD 의 `/home/ngd/storage` 와 서버의 `/mnt/newport_1` 은 **같은 OCFS2 �
 
 ---
 
+### 라벨 정합 — 리사이즈 기하를 어노테이션에 전달
+
+stage1 이 이미지를 리사이즈하고 stage2 가 어노테이션을 변환하는데, **두 단계가 서로
+다른 프로세스(심지어 다른 기계)에서 돈다.** 그래서 리사이즈가 이미지에 무슨 짓을 했는지
+stage2 가 알 방법이 필요하다. 모르면 어노테이션이 원본 해상도 기준으로 남아 리사이즈된
+이미지와 어긋난 데이터셋이 조용히 만들어진다.
+
+| 단계 | 파일 | 역할 |
+|---|---|---|
+| stage1 `resize` | `resize_transform.json` 기록 | 파일별 letterbox/stretch 기하(스케일·패딩·원본크기) |
+| stage2 `convert_annotation` | `_load_resize_transform()` 으로 읽음 | stage1 산출물 쪽에서 찾아 읽는다 |
+| 변환 | `formats/coco.py: get_bboxes_yolo(transform=)` | bbox 를 이미지와 **같은 변환**에 통과 |
+
+`center_crop` 은 단순 affine 이 아니라 잘려나간 박스 처리가 필요해서, 표시만 남기고
+변환하지 않는다.
+
+이 경로가 끊기면 증상이 눈에 잘 띄지 않는다 — 파일 개수도 맞고 학습도 돌아가는데
+박스만 어긋난다. `server/test_stage1_smoke.py` 가 `resize_transform.json` 이 전체 이미지를
+덮는지 확인하는 이유다.
+
+---
+
 ## 2. 컴포넌트 책임 경계
 
 | 컴포넌트 | 하는 일 | 하지 않는 일 |
@@ -115,7 +137,9 @@ pj.spec.preprocessing_pipeline / stage2_pipeline
 ## 4. 상태 전이
 
 `kubectl get pj` 의 STATUS / STAGE / LABELS 컬럼으로 관측한다.
-(이 클러스터는 node-ip(tap0) 문제로 `kubectl logs` 가 안 되므로 관측을 CR status 로 설계했다.)
+(관측을 CR status 로 설계한 것은 구 클러스터에서 node-ip(tap0) 문제로 `kubectl logs` 가
+안 됐기 때문이다. 2026-08-18 재생성된 클러스터에서는 `kubectl logs` 도 정상이지만,
+CR status 로 관측하는 설계는 그대로 둔다 — 로그 접근성에 기대지 않는 편이 안전하다.)
 
 | STAGE | progress | 의미 |
 |---|---|---|
@@ -184,14 +208,25 @@ CPU 에서 돌아야 해서가 아니다. CSD 가 데이터셋 전체와 어노�
 | `STAGE2_TARGET` | `CSD` | stage2 실행 위치 (CSD / CPU) |
 | `LABEL_WAIT_TIMEOUT` | `0` | 라벨 대기 제한(초), 0 = 무한 |
 | `CSD_REMOTE_HOST` / `CSD_REMOTE_PASS` | `root@10.2.1.2` / (시크릿) | 비밀번호는 `csd-credentials` 시크릿에서 주입. 없으면 CSD 오프로드 불가 |
+| `CSD_REMOTE_REPO` | `/home/ngd/storage/csd_preprocessing` | CSD 측 코드 경로. 워커 기본값에 기대지 않고 컨트롤러가 명시 전달 |
 | `CSD_RESOURCE_NAME` | `keti.re.kr/csd` | 디바이스 플러그인 확장 자원 |
 | `NODE_HOSTNAME` / `WORKER_IMAGE` | `gpu-npu-server-02` / `csd-preprocessor:latest` | 워커 Job 배치 |
+
+**CSD 인증은 비밀번호(sshpass) 전용이다.** 공개키 인증은 `PubkeyAuthentication=no` 로
+명시적으로 끈다 — 실행 주체(서버 셸 / 워커 컨테이너 / 다른 노드)마다 키가 있기도 없기도
+해서, 켜 두면 키가 있는 자리에서만 조용히 성공해 환경마다 다르게 동작한다. 비밀번호가
+비어 있으면 워커는 **즉시 실패한다**(조용한 폴백 없음).
 
 ### 워커 (Job env — 컨트롤러가 주입)
 
 `PREPROCESSING_STEPS`(파이프라인 JSON), `LABEL_PATH`, `PLACEHOLDER_LABELS`,
 `BATCH_MANIFEST_JSON`, `DATA_PATH`, `OUTPUT_DIR`, `DATASET_DIR`, `WORKER_TYPE`,
 `CSD_REMOTE_*`, `CSD_REMOTE_EXEC_TIMEOUT`(기본 1800초).
+
+`CSD_REMOTE_PYTHONPATH`(기본 `/home/ngd/storage/pylibs`)는 CSD 의 numpy/OpenCV 경로다.
+CSD 는 최소 rootfs 라 복구할 때마다 `dist-packages` 가 초기화된다(2026-08-11 실제 발생).
+그래서 패키지를 공유 OCFS2 파티션에 두고 실행 시점에 `PYTHONPATH` 로 얹는다 —
+rootfs 가 리셋돼도 CSD 는 그대로 돈다.
 
 이미지 병렬 처리(§11):
 
@@ -237,6 +272,24 @@ CPU 에서 돌아야 해서가 아니다. CSD 가 데이터셋 전체와 어노�
 | 워크로드 생산자 단일화 | 같은 입력에 pw 중복 생성 |
 | 알 수 없는 스텝 즉시 실패 | 오타가 조용히 무시되는 것 |
 | 인플레이스 진입 전 원격 경로 확인 (`ssh test -d`) | CSD 가 공유 경로를 못 보는데 제자리 실행을 시도하는 것 (실패 시 복사 방식으로 폴백) |
+| 비밀번호 없으면 즉시 실패 (`PubkeyAuthentication=no`) | 키가 있는 자리에서만 조용히 성공해 환경마다 다르게 도는 것 |
+| CSD 코드 사본 해시 대조 (`csd_healthcheck.py`) | 워킹트리만 고치고 CSD 사본을 안 올려 옛 코드가 도는 것 |
+| 배포 이미지 코드 해시 대조 (`test_k8s_integration.py`) | 이미지를 다시 굽지 않아 파드가 옛 코드를 도는 것 |
+| 리사이즈 기하 전달 (`resize_transform.json`) | 어노테이션이 원본 해상도 기준으로 남아 이미지와 어긋나는 것 (§1) |
+
+### 실행되는 코드 사본은 세 벌이다
+
+이 구조에서 같은 코드가 세 군데에 존재하고, **각각 따로 갱신해야 한다.**
+이게 이 시스템에서 가장 조용히 틀리는 지점이라 감지 장치를 각각 붙였다.
+
+| 사본 | 누가 실행 | 갱신 | 드리프트 감지 |
+|---|---|---|---|
+| 워킹트리 | 로컬 CLI·테스트 | (원본) | — |
+| 공유 볼륨 `/mnt/newport_1/csd_preprocessing` | CSD 가 SSH 로 진입해 실행 | `./k8s/deploy.sh csd-sync` | 헬스체크 `code copy in sync` |
+| 컨테이너 이미지 | k8s 파드(컨트롤러·매니저·워커) | `./k8s/deploy.sh image` | k8s 회귀 시작 시 파드 내 해시 대조 |
+
+CSD 사본이 어긋나면 워커가 "구버전 CSD" 로 감지해 실패시키지만(위 표),
+그건 **파이프라인 계약이 바뀐 경우만** 걸린다. 해시 대조는 그보다 넓게 잡는다.
 
 ---
 
@@ -323,14 +376,26 @@ pj_out/<워크로드명>/
    **규모 검증**: COCO val2017 5000장 + 실 어노테이션(36,781건)으로 stage1→stage2
    전 구간 성공. 산출 데이터셋은 train 4952 / val 743 / test 247(증강 1000장 포함),
    YOLO 라벨 개수 일치, 80개 클래스 `data.yaml`, 바운딩박스 54,103개.
-   stage2 는 실 CSD 에서 `mode=shared-volume` 으로 실행됐다. 검증용 워크로드와 산출물은 확인 후
-   정리했고, 남아 있는 것은 `mte-test-001` `wrr-test-001` `demo-wl-001`
-   `symlink-test-001` 4건이다.
+   stage2 는 실 CSD 에서 `mode=shared-volume` 으로 실행됐다.
+   **이 검증들은 2026-08-14 이전 클러스터에서 이뤄졌고 그 클러스터는 소멸했다** —
+   당시 남아 있던 검증 워크로드(`mte-test-001` 등)도 함께 사라졌다. 현재 클러스터
+   (8/18 재생성)에서 재확인된 것은 STATIC 분할 기준 E2E 완주이며(`server/test_k8s_integration.py`),
+   **MTE/WRR 자동 선택은 아직 재확인하지 않았다.**
    다만 **WRR 은 실행 중 재분배가 아니라 디스패치 시점의 정적 인터리브 분할**이다 —
    가중치를 바꾸면 다음 잡부터 반영되고, 진행 중인 잡은 재분배하지 않는다.
 6. **작은 데이터셋의 stratified split** — 클래스당 1~2장이면 계층 분할의 의미가
    약하다(전체 비율은 §10 수정으로 보장됨).
-7. **데이터셋 위치가 전송 비용을 결정한다** — 공유 OCFS2 파티션
+7. **실행되는 코드 사본이 세 벌이다**(§7) — 워킹트리·공유 볼륨·컨테이너 이미지.
+   각각 따로 갱신해야 하고, 드리프트는 **검사를 돌려야** 드러난다. 특히 이미지 쪽은
+   k8s 회귀를 돌리기 전까지 파드가 조용히 옛 코드를 돈다.
+8. **회귀가 도는 계기가 배포뿐이다** — 회귀 3층은 `./k8s/deploy.sh verify` 로 묶여
+   있고 `all`·`image` 뒤에 자동 실행되지만, 코드만 고치고 배포하지 않으면 아무것도
+   돌지 않는다. 저장소에 커밋 훅을 걸 CI 가 아직 없다.
+9. **kubeconfig 가 저장소 밖 경로에 묶여 있다** — 컨트롤러·매니저가
+   `/root/preprocess-isolation/preprocess-csd.kubeconfig` 를 hostPath 로 마운트한다.
+   경로가 Deployment 매니페스트에 박혀 있어 노드를 바꾸면 같이 손봐야 하고,
+   클러스터를 재생성하면 토큰이 죽어 재발급이 필요하다(`./k8s/deploy.sh kubeconfig`).
+10. **데이터셋 위치가 전송 비용을 결정한다** — 공유 OCFS2 파티션
    (`/mnt/newport_1/...`)에 두면 복사 없이 제자리 실행(`mode=shared-volume`)이지만,
    노드 로컬(`/home/ngd/storage/csd_preprocessing/...`)에 두면 매 실행마다 scp
    push/pull 이 발생한다(`mode=copy`, 30장 기준 약 5초). 기존 노드 로컬 데이터도
@@ -355,6 +420,12 @@ pj_out/<워크로드명>/
 | 진입점 이원화 | csd-server 와 분산 경로가 같은 데이터를 각자 처리 | watcher 를 감지 전용으로 축소 |
 | CSD 오프로드가 매번 데이터 복사 | 30장에 push/pull 약 5초, 데이터 크기에 비례 | 공유 볼륨이면 경로만 번역해 제자리 실행 (복사 방식 폴백 유지) |
 | 워커가 컨테이너 경로만 봄 | 공유 볼륨인데도 `mode=copy` 로 떨어짐 | 컨트롤러가 `HOST_*` 노드 경로를 주입 |
+| 어노테이션이 원본 해상도 기준 (2026-08-06) | 파일 수도 맞고 학습도 도는데 **박스만 어긋남** | stage1 이 `resize_transform.json` 을 남기고 stage2 가 같은 변환에 bbox 를 통과 (§1) |
+| CSD 재구축으로 코드 경로 변경 (2026-08-14) | `CSD_REMOTE_REPO` 기본값이 없는 경로(`csd-based-preprocessing`)를 가리켜 원격 실행 실패 | 기본값을 `csd_preprocessing` 으로 정정하고 컨트롤러가 명시 전달 |
+| 공개키 인증이 자리마다 다르게 동작 | 서버 셸에선 되고 워커 컨테이너에선 실패 | 비밀번호 전용으로 통일, `PubkeyAuthentication=no` 로 폴백 차단 |
+| 코드 경로를 공유 볼륨 루트에서 파생 | **데이터 마운트 지점을 바꾸면 코드 경로까지 따라 이동** | `DEFAULT_REMOTE_REPO`/`DEFAULT_REMOTE_WORKDIR` 를 리터럴로 분리 (실패 경로 회귀가 잡아냄) |
+| RBAC Role 의 CR 그룹이 옛 이름(`batch.csd.io`) | 컨트롤러가 자기 CR 을 못 읽음(403) | `k8s/namespace-rbac.yaml` 로 저장소에 편입하며 `edgeai.keti.re.kr` 추가 |
+| device-plugin 없이 워크로드 제출 | CSD 샤드 파드가 `Insufficient keti.re.kr/csd` 로 Pending | `deploy.sh plugin` 이 광고될 때까지 대기 후 진행 |
 
 ---
 
