@@ -237,6 +237,16 @@ do_verify() {
     tail -12 /tmp/csd-verify-k8s.log
   fi
 
+  # 분할 알고리즘 E2E. 통합 회귀는 STATIC 만 밟으므로 MTE/WRR/AUTO 는 따로 본다.
+  info "3층: 분할 알고리즘 E2E"
+  if "$py" "$REPO_ROOT/server/test_k8s_algorithms.py" >/tmp/csd-verify-algo.log 2>&1; then
+    info "  $(grep -aE '^\[(PASS|SKIP)\]' /tmp/csd-verify-algo.log | head -1)"
+    grep -aE '^  (MTE|WRR|AUTO) ' /tmp/csd-verify-algo.log | sed 's/^/   /'
+  else
+    failed+=("분할 알고리즘 E2E — /tmp/csd-verify-algo.log")
+    tail -12 /tmp/csd-verify-algo.log
+  fi
+
   if [ ${#failed[@]} -gt 0 ]; then
     printf '\033[31m회귀 실패 %d건:\033[0m\n' "${#failed[@]}"
     printf '   - %s\n' "${failed[@]}"

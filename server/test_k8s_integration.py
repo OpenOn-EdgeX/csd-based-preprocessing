@@ -111,34 +111,35 @@ def verify_deployed_code() -> str:
     return f"{len(local)}개 파일 일치"
 
 
-def stage_dataset(root: Path) -> tuple[Path, Path]:
+def stage_dataset(root: Path, n_images: int = N_IMAGES) -> tuple[Path, Path]:
     """공유 볼륨 아래에 합성 데이터셋을 깐다.
 
     합성 이미지를 쓰는 이유: 회귀는 raw_data 의 내용에 기대면 안 되고, 남의 데이터를
     건드리지 않아야 하며, 12장이면 분할·집계·stage2 를 다 지나가기 때문이다."""
     root.mkdir(parents=True, exist_ok=True)
-    ds = create_synthetic_coco_dataset(root, n_images=N_IMAGES)
+    ds = create_synthetic_coco_dataset(root, n_images=n_images)
     return ds["images"], ds["annotations"]
 
 
-def submit(images: Path, labels: Path, out_root: Path) -> None:
+def submit(images: Path, labels: Path, out_root: Path, name: str = WL_NAME,
+           algorithm: str = "STATIC", total_samples: int = N_IMAGES) -> None:
     manifest = {
         "apiVersion": "edgeai.keti.re.kr/v1alpha1",
         "kind": "PreprocessingWorkload",
-        "metadata": {"name": WL_NAME, "namespace": NAMESPACE},
+        "metadata": {"name": name, "namespace": NAMESPACE},
         "spec": {
             "workload": {
                 "dataset": {
                     "inputPath": str(images),
                     "outputPath": str(out_root),
                     "labelPath": str(labels),
-                    "totalSamples": N_IMAGES,
+                    "totalSamples": total_samples,
                 },
                 "pipelineTemplate": "stage1_raw_ingestion",
                 "stage2Template": "stage2_training_preparation",
                 "waitForLabels": False,
                 "slo": {"type": "THROUGHPUT", "target": 100.0},
-                "algorithm": "STATIC",
+                "algorithm": algorithm,
             },
             "placement": {"nodeId": os.environ.get("NODE_HOSTNAME", "gpu-npu-server-02"),
                           "csdId": "csd-01", "cpuCores": 4, "memMb": 8192},
@@ -150,12 +151,12 @@ def submit(images: Path, labels: Path, out_root: Path) -> None:
         raise AssertionError(f"워크로드 제출 실패: {proc.stderr.strip()}")
 
 
-def wait_terminal() -> str:
+def wait_terminal(name: str = WL_NAME) -> str:
     deadline = time.time() + TIMEOUT_SEC
     last = ""
     while time.time() < deadline:
-        phase = kubectl("get", "pw", WL_NAME, "-o", "jsonpath={.status.phase}", check=False)
-        stage = kubectl("get", "pj", WL_NAME, "-o", "jsonpath={.status.stage}", check=False)
+        phase = kubectl("get", "pw", name, "-o", "jsonpath={.status.phase}", check=False)
+        stage = kubectl("get", "pj", name, "-o", "jsonpath={.status.stage}", check=False)
         line = f"{phase or '(대기)'} / stage={stage or '-'}"
         if line != last:
             print(f"    {int(time.time() - deadline + TIMEOUT_SEC):>4}s  {line}", flush=True)
@@ -209,13 +210,13 @@ def verify_artifacts(out_root: Path) -> dict:
             "splits": splits}
 
 
-def cleanup_cr() -> None:
+def cleanup_cr(name: str = WL_NAME) -> None:
     """CR 삭제로 PJ·워커 Job 까지 연쇄 GC 되는지 확인한다(ownerReferences 회귀)."""
-    kubectl("delete", "pw", WL_NAME, "--wait=true", check=False, timeout=120)
+    kubectl("delete", "pw", name, "--wait=true", check=False, timeout=120)
     deadline = time.time() + 120
     while time.time() < deadline:
         jobs = kubectl("get", "jobs", "--no-headers", check=False)
-        leftover = [l for l in jobs.splitlines() if WL_NAME in l]
+        leftover = [l for l in jobs.splitlines() if name in l]
         if not leftover:
             return
         time.sleep(POLL_SEC)

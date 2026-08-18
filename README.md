@@ -60,9 +60,10 @@ CSD_PASS=<비번> ./k8s/deploy.sh image    # 이미지 (+ 회귀 자동 실행)
 
 | 층 | 명령 | 확인 범위 |
 |---|---|---|
-| 로컬 | `./run_smoke_tests.sh` | 파이프라인·상태 전이·대표 실패 경로·CSD 원격 실패 경로 |
+| 로컬 | `./run_smoke_tests.sh` | 파이프라인·상태 전이·대표 실패 경로·CSD 원격 실패 경로·분할 알고리즘 선택 |
 | CSD | `CSD_REMOTE_PASS=<비번> ./run_local_python.sh server/csd_healthcheck.py --offload` | 접속·원격 런타임·공유 볼륨·코드 사본 드리프트·실제 오프로드 1회 |
 | k8s | `./run_local_python.sh server/test_k8s_integration.py` | 워크로드 제출 → Succeeded → 산출물 → CR·Job 연쇄 GC |
+| k8s | `./run_local_python.sh server/test_k8s_algorithms.py` | MTE/WRR/AUTO 분할이 CR·워커까지 이어지는지 |
 
 세 층을 한 번에: `CSD_PASS=<비번> ./k8s/deploy.sh verify`
 
