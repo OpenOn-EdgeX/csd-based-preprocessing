@@ -1,0 +1,64 @@
+# --- 데모/실행 데이터 (레포에 넣지 않음) ---
+# COCO annotation zip 등 대용량 데이터 포함. 재현은 demo_data/_source 스크립트 참고.
+demo_data/
+
+# 모델 가중치
+*.pt
+
+# 연구노트 / 논문 (별도 관리)
+documents/
+
+# 실험 코드·결과 (별도 관리 — 로컬 tar 백업만 둔다).
+# results/ 에 과거 실행 설정이 그대로 남아 있어(비밀번호 포함) 통째로 제외한다.
+experiments/
+실험근거-터미널.md
+
+# Claude Code 로컬 설정 (머신마다 다름)
+.claude/settings.local.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# 가상환경
+.venv/
+venv/
+env/
+ENV/
+
+# 테스트/커버리지
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# --- 로그 / 임시 산출물 ---
+*.log
+*.tmp
+*.bak
+
+# --- 자격증명 / 로컬 설정 (실수 방지용) ---
+.env
+.env.*
+*.pem
+*.key
+kubeconfig
+kubeconfig.*
+*credentials*
+*secret*.yaml
+
+# --- 에디터 / OS ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

@@ -1,0 +1,62 @@
+##############################################################################
+# YOLO Object Detection - Full Pipeline (라벨링 완료된 데이터셋 전용)
+#
+# COCO, VOC 등 이미 어노테이션이 존재하는 데이터셋에 대해
+# 1단계 + 2단계를 한 번에 실행하는 통합 파이프라인
+#
+# 사용 시점: 라벨링이 완료된 데이터셋을 학습용으로 변환할 때
+##############################################################################
+pipeline:
+  name: "YOLO Object Detection - Full Pipeline"
+  description: "Complete preprocessing for labeled datasets (COCO/VOC → YOLO)"
+  version: "1.0"
+  requires_annotation: true
+
+stages:
+  # ── 1단계: Raw 데이터 정제 (라벨 불필요) ──
+  - op: validate
+    params:
+      check_integrity: true
+      min_resolution: [32, 32]
+      allowed_formats: ["jpg", "jpeg", "png", "bmp"]
+
+  - op: deduplicate
+    params:
+      method: "phash"
+      hash_size: 16
+      threshold: 5
+
+  - op: filter_quality
+    params:
+      min_blur_score: 100.0
+      min_brightness: 20
+      max_brightness: 235
+
+  - op: resize
+    params:
+      target_size: [640, 640]
+      method: "letterbox"
+      padding_color: [114, 114, 114]
+      interpolation: "area"
+
+  # ── 2단계: 라벨링 완료 후 학습 데이터 구성 ──
+  - op: convert_annotation
+    params:
+      source_format: "coco"
+      target_format: "yolo"
+
+  - op: split
+    params:
+      method: "stratified"
+      ratios:
+        train: 0.8
+        val: 0.15
+        test: 0.05
+      seed: 42
+
+  - op: statistics
+    params:
+      per_channel_mean: true
+      per_channel_std: true
+      class_distribution: true
+      bbox_statistics: true

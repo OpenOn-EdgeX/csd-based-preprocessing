@@ -1,0 +1,91 @@
+# CSD 데이터 감시자 (server/csd_watcher.py) — 상주 데몬을 k8s Deployment로 운영.
+#
+# 역할(watch 모드): raw_data/images 데이터 도착을 감지해 기록만 한다. 전처리도,
+# 워크로드 생성도 하지 않는다 — PreprocessingWorkload 는 **스케줄러만** 만든다
+# (생산자를 하나로 두어 같은 입력에 대한 중복 제출/중복 처리를 원천 차단).
+#   자동 인입이 필요하면 args 에 --emit-workload 추가 (스케줄러와 동시 사용 금지)
+#   k8s 없이 이 파드에서 직접 처리하려면 --legacy-inprocess
+#
+# - 네임스페이스/RBAC/쿼터: /root/preprocess-isolation/ (Phase 2) 에서 생성된 것을 사용
+# - 이미지는 이 노드 containerd 에만 존재 (imagePullPolicy: Never)
+#   갱신 절차: docker build -t csd-preprocessor:latest . && \
+#             docker save csd-preprocessor:latest | ctr -n k8s.io images import -
+#   이후 kubectl -n preprocess-csd rollout restart deploy/csd-watcher
+# - 데이터는 hostPath(/home/ngd/storage/csd_preprocessing) — PV 아님, 노드 고정
+# - 로그 확인: node-ip(tap0) 문제로 kubectl logs 불가 → 노드에서 crictl logs 사용
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: csd-watcher
+  namespace: preprocess-csd
+  labels:
+    app: csd-watcher
+    part: preprocess-csd
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # 파일 기반 상태(_status/, trigger.json) 이중 처리 방지 — 동시 2개 금지
+  selector:
+    matchLabels:
+      app: csd-watcher
+  template:
+    metadata:
+      labels:
+        app: csd-watcher
+        part: preprocess-csd
+      annotations:
+        sched.ai/data-sensitivity: low
+        sched.ai/intent: service
+        sched.ai/preference: cost
+        sched.ai/rescheduling: sticky
+    spec:
+      serviceAccountName: preprocess-admin
+      nodeSelector:
+        kubernetes.io/hostname: gpu-npu-server-02
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: csd-watcher
+        image: csd-preprocessor:latest
+        imagePullPolicy: Never
+        command: [python, server/csd_watcher.py]
+        # 기본 = watch 모드 (감지 기록만). 자동 인입을 켜려면 --emit-workload 를 추가.
+        # --host-base-dir 는 워커 Job 이 hostPath 로 마운트할 **노드 경로**로,
+        # --emit-workload 를 켤 때 반드시 필요하다(컨테이너 경로와 다르므로).
+        args:
+          - --base-dir
+          - /storage/csd_preprocessing
+          - --host-base-dir
+          - /home/ngd/storage/csd_preprocessing
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: WATCH_NAMESPACE
+          value: preprocess-csd
+        # API 접근: 매니저/컨트롤러와 같은 전용 kubeconfig (KubeEdge 엣지노드라
+        # ClusterIP 경유가 불안정 — /root/preprocess-isolation/ 참조)
+        - name: KUBECONFIG
+          value: /etc/preprocess/kubeconfig
+        # watch 모드는 파일 목록만 스캔하므로 가볍다. --legacy-inprocess 로 이 파드에서
+        # 직접 전처리할 때는 cpu 2 / memory 4Gi 수준으로 올려야 한다.
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        volumeMounts:
+        - name: csd-storage
+          mountPath: /storage/csd_preprocessing
+        - name: kubeconfig
+          mountPath: /etc/preprocess/kubeconfig
+          readOnly: true
+      volumes:
+      - name: csd-storage
+        hostPath:
+          path: /home/ngd/storage/csd_preprocessing
+          type: DirectoryOrCreate
+      - name: kubeconfig
+        hostPath:
+          path: /root/preprocess-isolation/preprocess-csd.kubeconfig
+          type: File

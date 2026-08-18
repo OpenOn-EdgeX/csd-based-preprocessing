@@ -1,0 +1,97 @@
+# preprocess-csd 네임스페이스 + 쿼터/리밋 + 실행 주체(preprocess-admin) 권한.
+#
+# 원본은 /root/preprocess-isolation/phase2/ 에 있었으나, 클러스터가 재생성되면
+# (2026-08-14, 2026-08-18) 저장소 밖 자산에 의존해 재배포가 막혔다. 그래서
+# 배포에 필요한 것을 저장소 안으로 옮겨 이 파일 하나로 세울 수 있게 했다.
+#
+#   kubectl apply -f k8s/namespace-rbac.yaml
+#
+# phase2 원본과의 차이: CR 그룹이 batch.csd.io → edgeai.keti.re.kr 로 바뀌었는데
+# Role 에 반영돼 있지 않아 컨트롤러가 자기 CR 을 못 읽는 상태였다. 아래에 넣었다.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: preprocess-csd
+  labels:
+    part: preprocess-csd
+    purpose: csd-io-measurement
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: preprocess-csd-quota
+  namespace: preprocess-csd
+spec:
+  hard:
+    requests.cpu: "12"
+    limits.cpu: "12"
+    requests.memory: 16Gi
+    limits.memory: 16Gi
+    pods: "20"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: preprocess-csd-limits
+  namespace: preprocess-csd
+spec:
+  limits:
+  - type: Container
+    # requests 미기재 시 defaultRequest=default 로 채워져 Guaranteed QoS가 기본이 됨
+    default:
+      cpu: "2"
+      memory: 4Gi
+    defaultRequest:
+      cpu: "2"
+      memory: 4Gi
+    max:
+      cpu: "8"
+      memory: 12Gi
+    min:
+      cpu: 100m
+      memory: 128Mi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: preprocess-admin
+  namespace: preprocess-csd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: preprocess-admin
+  namespace: preprocess-csd
+rules:
+# 매니저·컨트롤러가 다루는 자기 CR — 이게 없으면 watch 단계에서 403 이 난다.
+- apiGroups: [edgeai.keti.re.kr]
+  resources: [preprocessingworkloads, preprocessingworkloads/status,
+              preprocessingjobs, preprocessingjobs/status]
+  verbs: ["*"]
+- apiGroups: [""]
+  resources: [pods, pods/log, pods/exec, configmaps, secrets, services,
+              persistentvolumeclaims, events]
+  verbs: ["*"]
+- apiGroups: [apps]
+  resources: [deployments, statefulsets, daemonsets, replicasets]
+  verbs: ["*"]
+- apiGroups: [batch]
+  resources: [jobs, cronjobs]
+  verbs: ["*"]
+- apiGroups: [metrics.k8s.io]
+  resources: [pods]
+  verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: preprocess-admin
+  namespace: preprocess-csd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: preprocess-admin
+subjects:
+- kind: ServiceAccount
+  name: preprocess-admin
+  namespace: preprocess-csd

@@ -1,0 +1,44 @@
+pipeline:
+  name: "Image Classification Preprocessing"
+  description: "Preprocessing pipeline for image classification training"
+  version: "1.0"
+
+stages:
+  - op: validate
+    params:
+      check_integrity: true
+      min_resolution: [16, 16]
+      allowed_formats: ["jpg", "jpeg", "png"]
+
+  - op: deduplicate
+    params:
+      method: "phash"
+      hash_size: 16
+      threshold: 3
+
+  - op: filter_quality
+    params:
+      min_blur_score: 50.0
+      min_brightness: 10
+      max_brightness: 245
+
+  - op: resize
+    params:
+      target_size: [224, 224]
+      method: "center_crop"
+      interpolation: "bilinear"
+
+  - op: split
+    params:
+      method: "stratified"
+      ratios:
+        train: 0.8
+        val: 0.1
+        test: 0.1
+      seed: 42
+
+  - op: statistics
+    params:
+      per_channel_mean: true
+      per_channel_std: true
+      class_distribution: true

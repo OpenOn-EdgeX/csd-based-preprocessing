@@ -1,0 +1,40 @@
+# PreprocessingJob 샘플 CR — 컨트롤러가 이걸 감지해 CPU/CSD 워커 Job 2개를 디스패치한다.
+#
+#   kubectl apply -f k8s/sample-preprocessingjob.yaml
+#   kubectl -n preprocess-csd get pj -w        # Pending → Running → Succeeded
+#   kubectl -n preprocess-csd delete pj demo-pj-001   # 삭제 시 워커 Job 도 자동 GC
+#
+# algorithm: STATIC | MTE | WRR (MTE/WRR 은 예약 — 정의 확정 후 구현, 현재 선택 시 Failed)
+apiVersion: edgeai.keti.re.kr/v1alpha1
+kind: PreprocessingJob
+metadata:
+  name: demo-pj-001
+  namespace: preprocess-csd
+spec:
+  job_id: demo-pj-001
+  input_dataset_path: /home/ngd/storage/csd_preprocessing/raw_data/images
+  output_dataset_path: /home/ngd/storage/csd_preprocessing/pj_out/demo-pj-001
+  # 보통 매니저가 pw 에서 만들어 준다 (pipeline_template 해석 결과).
+  # 직접 apply 할 때는 preprocessing_steps 만 줘도 되고(params = 워커 기본값),
+  # params 까지 고정하려면 preprocessing_pipeline 을 쓴다.
+  pipeline_template: stage1_raw_ingestion
+  preprocessing_steps: [validate, deduplicate, filter_quality, resize, normalize, phash]
+  preprocessing_pipeline:
+    - op: validate
+      params: {min_resolution: [32, 32], max_file_size_mb: 100}
+    - op: deduplicate
+      params: {method: phash, hash_size: 16, threshold: 5}
+    - op: filter_quality
+      params: {min_blur_score: 100.0, min_brightness: 20, max_brightness: 235, min_contrast: 10.0}
+    - op: resize
+      params: {target_size: [640, 640], method: letterbox, padding_color: [114, 114, 114], interpolation: area}
+    - op: normalize
+      params: {per_channel_mean: true, per_channel_std: true}
+    - op: phash
+      params: {hash_size: 16}
+  execution_targets: [CPU, CSD]
+  partition_info:
+    algorithm: STATIC
+    cpu_ratio: 0.5
+    csd_ratio: 0.5
+    split_index: 0        # 0 = cpu_ratio 로 경계 자동 산출, >0 = 명시적 경계

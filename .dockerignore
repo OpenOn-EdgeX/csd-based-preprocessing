@@ -1,0 +1,12 @@
+# 런타임에 필요 없는 것만 제외한다 (실행 코드: cli.py, config, controller,
+# csd_preprocessor, worker, server 는 이미지에 들어가야 한다).
+# ※ buildkit 이 exclude 패턴을 HTTP 헤더로 넘겨서 비ASCII 경로를 넣으면 빌드가 깨진다.
+#   루트의 한글 문서는 이름 대신 '/*.md' 로 거른다.
+demo_data/
+documents/
+experiments/
+/*.md
+*.pt
+.claude/
+**/__pycache__/
+*.pyc

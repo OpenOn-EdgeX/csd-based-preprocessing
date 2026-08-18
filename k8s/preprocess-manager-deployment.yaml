@@ -1,0 +1,126 @@
+# 전처리 매니저 (controller/preprocess_manager.py)
+#
+# PreprocessingWorkload(스케줄러 생성)를 watch → 분할계획 수립 → PreprocessingJob 생성
+# → status 역전파. 실행엔진(preprocess-controller)과 별개 파드로 역할 분리.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: preprocess-manager
+  namespace: preprocess-csd
+  labels:
+    app: preprocess-manager
+    part: preprocess-csd
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate    # 매니저 2개 동시 실행 금지 (PJ 이중 생성 방지)
+  selector:
+    matchLabels:
+      app: preprocess-manager
+  template:
+    metadata:
+      labels:
+        app: preprocess-manager
+        part: preprocess-csd
+    spec:
+      serviceAccountName: preprocess-admin
+      nodeSelector:
+        kubernetes.io/hostname: gpu-npu-server-02
+      containers:
+      - name: manager
+        image: csd-preprocessor:latest
+        imagePullPolicy: Never
+        command: [python, controller/preprocess_manager.py]
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: KUBECONFIG
+          value: /etc/preprocess/kubeconfig
+        - name: WATCH_NAMESPACE
+          value: preprocess-csd
+        # AUTO = 워크로드 특성(데이터셋 규모 + 실측 성능비)으로 MTE/WRR 자동 선택.
+        # pw.spec.workload.algorithm 으로 워크로드별 강제 지정 가능.
+        - name: DEFAULT_ALGORITHM
+          value: AUTO
+        # 자동 선택 임계값 — 이하면 소규모로 보고 MTE
+        - name: AUTO_SMALL_DATASET
+          value: "100"
+        # CPU/CSD 성능비가 이하면 "차이가 작다"고 보고 MTE
+        - name: AUTO_BALANCED_RATIO
+          value: "3.0"
+        # WRR 라운드 길이 상한 (실측 처리량비는 기약이 안 돼 제한이 없으면 수천이 된다)
+        - name: WRR_MAX_CYCLE
+          value: "20"
+        - name: DEFAULT_CPU_RATIO
+          value: "0.5"
+        # --- 처리량 자동 측정 루프 (MTE/WRR 분할계획 입력) ---
+        # auto = 완료 잡에서 측정한 프로파일 우선, 없으면 pw.spec 의 throughput.
+        # spec = pw 에 적힌 값 강제(측정은 계속 기록만 한다).
+        - name: THROUGHPUT_SOURCE
+          value: auto
+        # effective = 전송(push/pull) 포함 실효 처리량 — MTE 의 완료시점 동기화 기준.
+        # compute = CSD 내부 순수 처리 시간 기준.
+        - name: THROUGHPUT_METRIC
+          value: effective
+        # new = alpha*측정값 + (1-alpha)*이전값. 1.0 이면 항상 최신 실측치만 쓴다.
+        - name: THROUGHPUT_EWMA_ALPHA
+          value: "0.5"
+        # 샤드가 이보다 작으면 프로세스 기동시간이 처리량을 왜곡 → 측정에서 제외.
+        - name: THROUGHPUT_MIN_SAMPLES
+          value: "5"
+        # 측정 프로파일이 없을 때 MTE 를 실패시키지 않고 이 비율로 1회 보정 실행.
+        - name: CALIBRATION_CPU_RATIO
+          value: "0.5"
+        # 실측 프로파일이 저장되는 ConfigMap (kubectl 로 확인·초기화 가능).
+        - name: THROUGHPUT_CONFIGMAP
+          value: preprocess-throughput-profile
+        # 전처리 파이프라인 기본 템플릿 (config/pipeline_templates/<name>.yaml).
+        # pw 가 pipelineTemplate/stages 를 주지 않으면 이걸 그대로 쓴다.
+        - name: DEFAULT_PIPELINE_TEMPLATE
+          value: stage1_raw_ingestion
+        # records.jsonl 에 파일별 pHash 기록 (분산실험 증빙). false 면 템플릿 스텝만 실행
+        - name: RECORD_PHASH
+          value: "true"
+        # stage2(라벨링 이후 학습데이터 구성) 기본 템플릿. pw 가 stage2Template 을
+        # 주지 않으면 이걸 쓴다. "none" 을 주면 pw 단위로 건너뛸 수 있다.
+        - name: DEFAULT_STAGE2_TEMPLATE
+          value: stage2_training_preparation
+        - name: ENABLE_STAGE2
+          value: "true"
+        # 실 어노테이션이 아직 없는 동안 임시 라벨로 stage2 배선을 통과시킨다.
+        # 산출 데이터셋은 학습용이 아니다 — 실 라벨 연동 후 "false" 로 바꿀 것.
+        - name: ALLOW_PLACEHOLDER_LABELS
+          value: "true"
+        # 라벨 게이트 기본값. true = stage1 후 어노테이션 도착까지 stage2 대기.
+        # pw.spec.workload.waitForLabels 로 워크로드별 재정의 가능.
+        - name: WAIT_FOR_LABELS
+          value: "true"
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        volumeMounts:
+        - name: kubeconfig
+          mountPath: /etc/preprocess/kubeconfig
+          readOnly: true
+        - name: storage
+          mountPath: /home/ngd/storage
+        # 공유 OCFS2 파티션 — 데이터셋이 여기 있으면 CSD 가 복사 없이 제자리에서
+        # 처리한다(워커 인플레이스 모드). 매니저는 입력 스캔, 컨트롤러는 집계·정리에 필요.
+        - name: shared
+          mountPath: /mnt/newport_1
+      volumes:
+      - name: kubeconfig
+        hostPath:
+          path: /root/preprocess-isolation/preprocess-csd.kubeconfig
+          type: File
+      - name: storage
+        hostPath:
+          path: /home/ngd/storage
+      - name: shared
+        hostPath:
+          path: /mnt/newport_1
+          type: Directory

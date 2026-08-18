@@ -1,0 +1,55 @@
+# csd-device-plugin — keti.re.kr/csd 확장 자원 광고 (GPU/NPU/LSU 와 같은 패턴)
+#
+#   docker build -t csd-device-plugin:latest deviceplugin/
+#   docker save csd-device-plugin:latest | ctr -n k8s.io images import -
+#   kubectl apply -f k8s/csd-device-plugin.yaml
+#   kubectl describe node gpu-npu-server-02 | grep -A1 keti.re.kr/csd
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: csd-device-plugin
+  namespace: preprocess-csd
+  labels:
+    app: csd-device-plugin
+    part: preprocess-csd
+spec:
+  selector:
+    matchLabels:
+      app: csd-device-plugin
+  template:
+    metadata:
+      labels:
+        app: csd-device-plugin
+        part: preprocess-csd
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: gpu-npu-server-02
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: plugin
+          image: csd-device-plugin:latest
+          imagePullPolicy: Never
+          env:
+            - name: CSD_HOST
+              value: "10.2.1.2"
+            - name: CSD_PORT
+              value: "22"
+            - name: DEVICE_COUNT
+              value: "1"
+          resources:
+            # preprocess-csd LimitRange 최소치(cpu 100m / mem 128Mi) 이상이어야 함
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: device-plugin
+              mountPath: /var/lib/kubelet/device-plugins
+      volumes:
+        - name: device-plugin
+          hostPath:
+            path: /var/lib/kubelet/device-plugins

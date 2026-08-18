@@ -1,0 +1,72 @@
+##############################################################################
+# 1단계: Raw 데이터 수집 전처리
+#
+# 엣지 디바이스에서 raw 데이터가 도착했을 때 즉시 실행
+# 어노테이션(라벨) 없이 동작 가능
+#
+# 실행 시점: 엣지 디바이스 → nvme2n1p3 공유 파티션에 데이터 도착 즉시
+# 실행 주체: CSD (watcher 데몬이 자동 트리거)
+#
+# 데이터 흐름:
+#   raw_data/ (다양한 크기, 중복, 깨진 파일 포함)
+#       ↓  CSD 전처리
+#   cleaned/ (검증 완료, 중복 제거, 품질 통과, 균일 크기)
+#
+# 이 단계 이후 HOST가 라벨링 도구(CVAT, Label Studio)로 어노테이션 수행
+##############################################################################
+pipeline:
+  name: "Stage 1 - Raw Data Ingestion"
+  description: "Edge device raw data preprocessing - no labels required"
+  version: "1.0"
+  requires_annotation: false
+
+stages:
+  # 1) 파일 무결성 검증
+  #    - 깨진 파일, 빈 파일, 디코딩 불가 파일 제거
+  #    - 최소 해상도 미달 파일 제거
+  #    - CSD 적합도: EXCELLENT (메타데이터만 읽음)
+  - op: validate
+    params:
+      check_integrity: true
+      min_resolution: [32, 32]
+      max_file_size_mb: 100
+      allowed_formats: ["jpg", "jpeg", "png", "bmp", "tiff", "webp"]
+
+  # 2) 중복 제거
+  #    - perceptual hash로 유사 이미지 탐지
+  #    - 엣지 디바이스 여러 대가 같은 장면을 찍는 경우 대비
+  #    - CSD 적합도: EXCELLENT (전체 읽고 해시만 출력)
+  - op: deduplicate
+    params:
+      method: "phash"
+      hash_size: 16
+      threshold: 5
+
+  # 3) 품질 필터링
+  #    - 블러, 과노출/저노출, 저대비 이미지 제거
+  #    - CSD 적합도: GOOD (이미지 디코딩 + 간단 연산)
+  - op: filter_quality
+    params:
+      min_blur_score: 100.0
+      min_brightness: 20
+      max_brightness: 235
+      min_contrast: 10.0
+
+  # 4) 리사이즈 (균일 크기로 변환)
+  #    - 다양한 해상도 → 640x640 균일 크기
+  #    - letterbox 패딩으로 종횡비 보존
+  #    - CSD 적합도: GOOD (큰 이미지 읽고 작은 이미지 출력)
+  - op: resize
+    params:
+      target_size: [640, 640]
+      method: "letterbox"
+      padding_color: [114, 114, 114]
+      interpolation: "area"
+
+  # 5) 기본 통계 수집 (라벨 없이 가능한 것만)
+  #    - 이미지 수, 해상도 분포, 채널별 mean/std
+  #    - CSD 적합도: EXCELLENT (전체 읽고 숫자 몇 개 출력)
+  - op: normalize
+    params:
+      per_channel_mean: true
+      per_channel_std: true

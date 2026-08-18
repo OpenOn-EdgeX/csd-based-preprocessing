@@ -1,0 +1,98 @@
+# PreprocessingJob CRD 컨트롤러 (controller/preprocess_controller.py)
+#
+# - CR(preprocessingjobs.edgeai.keti.re.kr)을 watch → 샤딩 → 워커 Job 디스패치 → status 갱신
+# - API 접근: 전용 kubeconfig(hostPath)를 마운트 (KubeEdge 엣지노드라 ClusterIP 경유가
+#   불안정할 수 있어 API 서버 주소가 박힌 kubeconfig 방식 사용)
+# - /home/ngd/storage 를 호스트와 동일 경로로 마운트 → CR 의 host 경로를 그대로 사용
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: preprocess-controller
+  namespace: preprocess-csd
+  labels:
+    app: preprocess-controller
+    part: preprocess-csd
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate    # 컨트롤러 2개 동시 실행 금지 (Job 이중 디스패치 방지)
+  selector:
+    matchLabels:
+      app: preprocess-controller
+  template:
+    metadata:
+      labels:
+        app: preprocess-controller
+        part: preprocess-csd
+    spec:
+      serviceAccountName: preprocess-admin
+      nodeSelector:
+        kubernetes.io/hostname: gpu-npu-server-02
+      containers:
+      - name: controller
+        image: csd-preprocessor:latest
+        imagePullPolicy: Never
+        command: [python, controller/preprocess_controller.py]
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: KUBECONFIG
+          value: /etc/preprocess/kubeconfig
+        - name: WATCH_NAMESPACE
+          value: preprocess-csd
+        # CSD SSH 비밀번호. 미설정이면 CSD 오프로드 불가(시뮬레이션만 가능).
+        # 공개키 인증은 쓰지 않는다 — 워커 파드마다 키를 심어야 해서 비번으로 통일했다.
+        # kubectl create secret generic csd-credentials \
+        #   --from-literal=password=<비번> -n preprocess-csd
+        - name: CSD_REMOTE_PASS
+          valueFrom:
+            secretKeyRef:
+              name: csd-credentials
+              key: password
+              optional: true
+        # CSD 측 코드 경로. 2026-08-14 CSD 재구축 때 배치 경로가
+        # csd-based-preprocessing → csd_preprocessing 으로 바뀌었다(옛 경로는 없다).
+        - name: CSD_REMOTE_REPO
+          value: /home/ngd/storage/csd_preprocessing
+        # stage2(라벨링 이후 학습데이터 구성) 실행 위치.
+        # CSD = 데이터셋 전체·어노테이션을 CSD 로 밀어 넣고 CSD 내부에서 실행
+        #       (라벨링은 HOST, 전처리는 CSD). CPU = 노드에서 실행.
+        - name: STAGE2_TARGET
+          value: CSD
+        # 실 CSD 오프로드 주소. NVMe 재열거(2026-08-03, hynix가 nvme0 차지)로
+        # CSD 가 tap1/10.2.1.2 가 됨 — 이미지 안 기본값에 의존하지 않고 여기서 명시.
+        - name: CSD_REMOTE_HOST
+          value: root@10.2.1.2
+        - name: NODE_HOSTNAME
+          value: gpu-npu-server-02
+        - name: WORKER_IMAGE
+          value: csd-preprocessor:latest
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        volumeMounts:
+        - name: kubeconfig
+          mountPath: /etc/preprocess/kubeconfig
+          readOnly: true
+        - name: storage
+          mountPath: /home/ngd/storage
+        # 공유 OCFS2 파티션 — 데이터셋이 여기 있으면 CSD 가 복사 없이 제자리에서
+        # 처리한다(워커 인플레이스 모드). 매니저는 입력 스캔, 컨트롤러는 집계·정리에 필요.
+        - name: shared
+          mountPath: /mnt/newport_1
+      volumes:
+      - name: kubeconfig
+        hostPath:
+          path: /root/preprocess-isolation/preprocess-csd.kubeconfig
+          type: File
+      - name: storage
+        hostPath:
+          path: /home/ngd/storage
+      - name: shared
+        hostPath:
+          path: /mnt/newport_1
+          type: Directory

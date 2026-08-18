@@ -1,0 +1,72 @@
+##############################################################################
+# 2단계: 학습 데이터 구성
+#
+# 라벨링이 완료된 후 실행
+# 어노테이션 파일이 반드시 있어야 함
+#
+# 실행 시점: HOST에서 라벨링 완료 후 → CSD에 job manifest 전달
+# 실행 주체: CSD
+#
+# 데이터 흐름:
+#   cleaned/ (1단계 결과) + annotations/ (HOST가 라벨링 완료)
+#       ↓  CSD 전처리
+#   preprocessed/ (train/val/test 분할, YOLO 포맷, 통계)
+#       ↓
+#   HOST가 data.yaml 읽어서 바로 YOLO 학습 시작
+#
+# 입력 조건: 1단계가 완료되어 있어야 하고, 어노테이션이 존재해야 함
+##############################################################################
+pipeline:
+  name: "Stage 2 - Training Data Preparation"
+  description: "Post-labeling preprocessing - annotation conversion, split, statistics"
+  version: "1.0"
+  requires_annotation: true
+
+stages:
+  # 1) 어노테이션 포맷 변환
+  #    - COCO JSON → YOLO TXT  또는  VOC XML → YOLO TXT
+  #    - 좌표 변환: [x_min, y_min, w, h] → [class_id, cx, cy, w, h] (normalized)
+  #    - 클래스 매핑 자동 생성 (COCO 비연속 ID → YOLO 연속 0,1,2...)
+  #    - CSD 적합도: GOOD (I/O 읽고 사칙연산)
+  - op: convert_annotation
+    params:
+      source_format: "coco"
+      target_format: "yolo"
+
+  # 2) 데이터 증강 (선택적)
+  #    - Mosaic: 4개 이미지 합성 → 소형 객체 학습 강화
+  #    - CutOut: 랜덤 영역 마스킹 → 오클루전 강건성
+  #    - 라벨이 있어야 증강 시 어노테이션 좌표 조정 가능
+  #    - CSD 적합도: EXCELLENT (4개 읽고 1개 출력)
+  - op: augment
+    params:
+      methods: ["mosaic", "cutout"]
+      num_augmented: 0  # 0 = auto (전체의 20%)
+      target_size: [640, 640]
+      seed: 42
+
+  # 3) Train/Val/Test 분할
+  #    - stratified: 각 클래스 비율을 유지하면서 분할
+  #    - 라벨의 primary class 기준으로 계층 분할
+  #    - 이미지 + YOLO label 파일을 함께 분배
+  #    - CSD 적합도: GOOD (파일 복사, SSD 내부 이동)
+  - op: split
+    params:
+      method: "stratified"
+      ratios:
+        train: 0.8
+        val: 0.15
+        test: 0.05
+      seed: 42
+
+  # 4) 데이터셋 통계 수집
+  #    - 클래스 분포, bbox 크기 분포 (small/medium/large)
+  #    - split별 이미지 수, 어노테이션 수
+  #    - data.yaml 자동 생성 (YOLO 학습 설정)
+  #    - CSD 적합도: EXCELLENT (GB 읽고 KB 출력)
+  - op: statistics
+    params:
+      per_channel_mean: true
+      per_channel_std: true
+      class_distribution: true
+      bbox_statistics: true

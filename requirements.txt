@@ -1,0 +1,10 @@
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0
+imagehash>=4.3.1
+PyYAML>=6.0
+tqdm>=4.65.0
+# 3.7 부터 표준 라이브러리에 들어왔다 — 3.6 에서만 백포트가 필요하다.
+# 마커가 >= "3.7" 이면 3.8 에 dataclasses 0.6(3.6용 백포트)이 깔려 stdlib 를 가린다.
+dataclasses; python_version < "3.7"
+kubernetes>=28.1.0
