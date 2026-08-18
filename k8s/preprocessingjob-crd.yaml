@@ -1,0 +1,185 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: preprocessingjobs.edgeai.keti.re.kr
+spec:
+  group: edgeai.keti.re.kr
+  scope: Namespaced
+  names:
+    kind: PreprocessingJob
+    listKind: PreprocessingJobList
+    plural: preprocessingjobs
+    singular: preprocessingjob
+    shortNames:
+      - pj
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: JOB_ID
+          type: string
+          jsonPath: .spec.job_id
+        - name: STATUS
+          type: string
+          jsonPath: .status.status
+        - name: STAGE
+          type: string
+          jsonPath: .status.stage
+        - name: LABELS
+          type: string
+          jsonPath: .status.stage2.label_source
+        - name: PROGRESS
+          type: string
+          jsonPath: .status.progress_ratio
+        - name: SPLIT
+          type: integer
+          jsonPath: .spec.partition_info.split_index
+        - name: AGE
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: |
+            PreprocessingJob — Preprocessing Accelerator 통합 CRD.
+            Preprocessing Manager 가 spec(목표 상태)을 선언하면 Execution Engine 이
+            watch 하여 Head(CPU)/Tail(CSD) 워커를 디스패치하고 status(현재 상태)를 갱신한다.
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              description: 목표 상태 — Preprocessing Manager 가 선언한다.
+              required: [job_id, input_dataset_path, preprocessing_steps, execution_targets, partition_info]
+              properties:
+                job_id:
+                  type: string
+                input_dataset_path:
+                  type: string
+                output_dataset_path:
+                  type: string
+                preprocessing_steps:
+                  type: array
+                  description: |
+                    수행할 전처리 연산 이름 목록 (관측·호환용). 실행 정본은
+                    preprocessing_pipeline 이며, 이 목록은 그것의 op 이름 순서와 같다.
+                  items:
+                    type: string
+                pipeline_template:
+                  type: string
+                  description: |
+                    파이프라인 정의 출처 — config/pipeline_templates/<name>.yaml.
+                    서버 경로(legacy)가 쓰는 것과 같은 템플릿이라 두 경로의 전처리
+                    설정이 일치한다. 빈 문자열이면 spec.workload.stages 로 직접 나열된 것.
+                preprocessing_pipeline:
+                  type: array
+                  description: |
+                    실행 정본 — 템플릿에서 해석된 [{op, params}] 목록. 컨트롤러가
+                    PREPROCESSING_STEPS env 로 워커에 그대로 전달한다(params 포함).
+                  items:
+                    type: object
+                    required: [op]
+                    properties:
+                      op:
+                        type: string
+                      params:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                stage2_template:
+                  type: string
+                  description: |
+                    라벨링 이후 단계 템플릿 (기본 stage2_training_preparation).
+                    빈 문자열이면 stage2 를 실행하지 않는다(샤드 단계까지만).
+                stage2_pipeline:
+                  type: array
+                  description: |
+                    stage2 실행 정본 — 샤드 병렬이 아니라 샤드 완료 후 **단일 패스**로
+                    실행된다(라벨 의존 + 데이터셋 전역 연산). 컨트롤러가 별도
+                    워커 Job(pj-<id>-stage2)으로 디스패치한다.
+                  items:
+                    type: object
+                    required: [op]
+                    properties:
+                      op:
+                        type: string
+                      params:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                label_dataset_path:
+                  type: string
+                  description: 어노테이션 디렉터리 (stage2 입력). 비어 있으면 placeholder_labels 참조.
+                wait_for_labels:
+                  type: boolean
+                  description: |
+                    true 면 stage1 완료 후 label_dataset_path 에 어노테이션이 도착할
+                    때까지 stage2 를 붙들어 둔다 (status.stage=waiting_labels).
+                    stage1 → HOST 라벨링 → stage2 의 시간 의존성을 표현한다.
+                placeholder_labels:
+                  type: boolean
+                  description: |
+                    true 면 실 어노테이션이 없을 때 워커가 임시 라벨을 생성해 stage2
+                    배선을 통과시킨다. 산출 데이터셋은 학습용이 아니며
+                    data.yaml/statistics.json 에 label_source=placeholder 로 표시된다.
+                execution_targets:
+                  type: array
+                  items:
+                    type: string
+                    enum: [CPU, CSD]
+                partition_info:
+                  type: object
+                  description: F-PM-03 throughput 측정치 기반 분할 계획.
+                  required: [cpu_ratio, csd_ratio, split_index, algorithm]
+                  properties:
+                    cpu_ratio:
+                      type: number
+                      minimum: 0
+                      maximum: 1
+                    csd_ratio:
+                      type: number
+                      minimum: 0
+                      maximum: 1
+                    split_index:
+                      type: integer
+                      minimum: 0
+                    algorithm:
+                      type: string
+                      enum: [MTE, WRR, STATIC]
+                    basis:
+                      type: object
+                      description: 산출 근거(측정 throughput 등). 자유 스키마.
+                      x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              description: 현재 상태 — Execution Engine 이 갱신한다.
+              properties:
+                status:
+                  type: string
+                  enum: [Pending, Running, Succeeded, Failed]
+                stage:
+                  type: string
+                  description: |
+                    현재 실행 단계 — shards(샤드 병렬) / waiting_labels(라벨 대기) /
+                    stage2(샤드 완료 후 단일 패스)
+                  enum: [shards, waiting_labels, stage2]
+                stage2:
+                  type: object
+                  description: stage2 실행 요약 (template/steps/label_source/splits/classes)
+                  x-kubernetes-preserve-unknown-fields: true
+                progress_ratio:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+                output_dataset_path:
+                  type: string
+                error_message:
+                  type: string
+                updated_at:
+                  type: string
+                observed_counts:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                consistency:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true

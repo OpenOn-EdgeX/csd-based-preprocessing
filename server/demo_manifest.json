@@ -1,0 +1,72 @@
+{
+  "job_id": "demo-coco-preprocess",
+  "job_type": "image_preprocessing",
+  "operations": [
+    {
+      "op": "validate",
+      "params": {
+        "check_integrity": true,
+        "min_resolution": [32, 32],
+        "allowed_formats": ["jpg", "jpeg", "png"]
+      }
+    },
+    {
+      "op": "deduplicate",
+      "params": {
+        "method": "dhash",
+        "hash_size": 16,
+        "threshold": 5
+      }
+    },
+    {
+      "op": "filter_quality",
+      "params": {
+        "min_blur_score": 50.0,
+        "min_brightness": 10,
+        "max_brightness": 245
+      }
+    },
+    {
+      "op": "convert_annotation",
+      "params": {
+        "source_format": "coco",
+        "target_format": "yolo"
+      }
+    },
+    {
+      "op": "resize",
+      "params": {
+        "target_size": [640, 640],
+        "method": "letterbox",
+        "padding_color": [114, 114, 114]
+      }
+    },
+    {
+      "op": "split",
+      "params": {
+        "method": "stratified",
+        "ratios": {"train": 0.7, "val": 0.2, "test": 0.1},
+        "seed": 42
+      }
+    },
+    {
+      "op": "statistics",
+      "params": {
+        "per_channel_mean": true,
+        "per_channel_std": true,
+        "class_distribution": true,
+        "bbox_statistics": true
+      }
+    }
+  ],
+  "input": {
+    "data_path": "./demo_data/raw_data/images",
+    "label_path": "./demo_data/raw_data/annotations",
+    "format": "coco"
+  },
+  "output": {
+    "data_path": "./demo_data/output/demo_job",
+    "structure": "yolo",
+    "generate_data_yaml": true
+  }
+}

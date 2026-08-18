@@ -1,0 +1,75 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: csd-mock-worker
+  namespace: preprocess-csd
+  labels:
+    app: csd-mock-worker
+    part: preprocess-csd
+spec:
+  backoffLimit: 1
+  completions: 1
+  parallelism: 1
+  template:
+    metadata:
+      labels:
+        app: csd-mock-worker
+        part: preprocess-csd
+    spec:
+      serviceAccountName: preprocess-admin
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 30
+      nodeSelector:
+        # Replace this with the actual value from:
+        # kubectl get nodes --show-labels
+        kubernetes.io/hostname: gpu-npu-server-02
+      containers:
+        - name: mock-worker
+          image: csd-preprocessor:latest
+          # For a node-local image that is not pushed to a registry.
+          imagePullPolicy: Never
+          command: ["python"]
+          args: ["worker/mock_worker.py"]
+          terminationMessagePolicy: File
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          env:
+            - name: BATCH_MANIFEST_JSON
+              value: >-
+                {"batchId":"csd-test-001","worker":"CSD","indexes":[0,1,2],"itemCount":3}
+            - name: DATA_PATH
+              value: /data
+            - name: OUTPUT_DIR
+              value: /output/csd-test-001
+            - name: OUTPUT_HOST_DIR
+              value: /home/ngd/storage/mock-output/csd-test-001
+            - name: WORKER_TYPE
+              value: CSD
+            - name: CSD_ENABLED
+              value: "true"
+            - name: BATCH_ID
+              value: csd-test-001
+            - name: SPLIT_ALGORITHM
+              value: range
+            - name: SPLIT_UNIT
+              value: index
+          volumeMounts:
+            - name: input-data
+              mountPath: /data
+              readOnly: true
+            - name: output-data
+              mountPath: /output
+      volumes:
+        - name: input-data
+          hostPath:
+            path: /home/ngd/storage/mock-input
+            type: Directory
+        - name: output-data
+          hostPath:
+            path: /home/ngd/storage/mock-output
+            type: DirectoryOrCreate

@@ -1,0 +1,45 @@
+# PreprocessingWorkload 샘플 — 스케줄러가 만들 CR 의 예시 (draft 스펙).
+#
+#   kubectl apply -f k8s/sample-preprocessingworkload.yaml
+#   kubectl -n preprocess-csd get pw,pj -w
+#   # 매니저: pw 감지 → 분할계획 → pj 생성 / 실행엔진: pj 실행 → 워커 Job
+#   kubectl -n preprocess-csd delete pw demo-wl-001   # 삭제 시 pj·워커 Job 연쇄 GC
+apiVersion: edgeai.keti.re.kr/v1alpha1
+kind: PreprocessingWorkload
+metadata:
+  name: demo-wl-001
+  namespace: preprocess-csd
+spec:
+  workload:
+    dataset:
+      # ★ 노드에서 본 경로다. 공유 OCFS2 파티션은 노드가 /mnt/newport_1, CSD 가
+      #   /home/ngd/storage 로 같은 실체를 본다 — 여기에 두어야 CSD 가 복사 없이
+      #   제자리에서 처리한다(shared-volume 모드). 노드에도 /home/ngd/storage 라는
+      #   **다른** 로컬 디렉터리가 있으니 헷갈리지 말 것: 그 경로를 쓰면 공유 볼륨으로
+      #   판정되지 않아 샤드마다 scp 고정비가 붙는 copy 모드로 떨어진다.
+      inputPath: /mnt/newport_1/csd_preprocessing/raw_data/images
+      outputPath: /mnt/newport_1/csd_preprocessing/pj_out/demo-wl-001
+      # labelPath: /mnt/newport_1/csd_preprocessing/raw_data/annotations  # 생략 시 <inputPath>/../annotations
+      totalSamples: 50
+    # 전처리 파이프라인은 고정 템플릿에서 온다 (params 까지 서버 경로와 동일).
+    # 생략하면 매니저 기본값(stage1_raw_ingestion)이 쓰이므로 스케줄러가 스텝을
+    # 고를 필요가 없다. 스텝을 직접 나열하려면 stages: 를 쓴다(파라미터는 워커 기본값).
+    pipelineTemplate: stage1_raw_ingestion
+    # 라벨링 이후 단계 — 샤드 완료 후 단일 패스로 실행된다 ("none" 이면 건너뜀).
+    # dataset.labelPath 가 없으면 매니저의 ALLOW_PLACEHOLDER_LABELS 에 따라 임시
+    # 라벨로 배선만 통과시킨다 (data.yaml.label_source=placeholder → 학습용 아님).
+    stage2Template: stage2_training_preparation
+    # 라벨 게이트: stage1 완료 후 어노테이션이 도착할 때까지 stage2 를 대기시킨다.
+    # labelPath 미지정 시 <inputPath>/../annotations 를 감시한다
+    # (trigger_stage2.sh 가 어노테이션을 올리는 위치와 같은 관례).
+    # false 로 두면 라벨 없이 임시 라벨로 바로 진행 — 학습용 아님.
+    waitForLabels: true
+    slo:
+      type: THROUGHPUT
+      target: 500.0
+    algorithm: STATIC        # STATIC | MTE | WRR (잡 제출 시 선택)
+  placement:                 # 스케줄러 바인딩 결과 (매니저는 basis 로 기록)
+    nodeId: gpu-npu-server-02
+    csdId: csd-01
+    cpuCores: 8
+    memMb: 16384

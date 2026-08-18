@@ -1,0 +1,75 @@
+##############################################################################
+# CSD 전처리 기본 설정
+#
+# nvme2n1 파티션 구조:
+#   nvme2n1p1 (100G)  - CSD 시스템
+#   nvme2n1p2 (800G)  - CSD 작업 공간
+#   nvme2n1p3 (2T)    - HOST ↔ CSD 공유 파티션 ★
+#
+# 이 설정의 모든 경로는 nvme2n1p3 마운트 포인트 기준
+##############################################################################
+
+storage:
+  # nvme2n1p3 공유 파티션 마운트 포인트
+  # HOST와 CSD 모두 이 경로를 통해 데이터에 접근
+  # 실제 마운트 시: mount /dev/nvme2n1p3 /mnt/nvme2n1p3
+  mount_point: "/mnt/nvme2n1p3"
+
+  # 디렉토리 구조 (mount_point 기준 상대경로)
+  #
+  # /mnt/nvme2n1p3/
+  # ├── raw_data/          ← 엣지 디바이스가 데이터 투입
+  # │   ├── images/
+  # │   └── annotations/   (있으면 COCO/VOC 포맷)
+  # ├── cleaned/           ← Stage 1 결과 (CSD가 기록)
+  # │   ├── images/        (검증+중복제거+품질필터+리사이즈 완료)
+  # │   └── _status/
+  # ├── preprocessed/      ← Stage 2 결과 (CSD가 기록, HOST가 학습용으로 사용)
+  # │   ├── train/
+  # │   │   ├── images/
+  # │   │   └── labels/
+  # │   ├── val/
+  # │   │   ├── images/
+  # │   │   └── labels/
+  # │   ├── test/
+  # │   │   ├── images/
+  # │   │   └── labels/
+  # │   ├── data.yaml      (YOLO 학습 설정 - HOST가 바로 사용)
+  # │   ├── statistics.json (데이터셋 통계)
+  # │   └── _status/
+  # └── jobs/              ← HOST가 Job manifest 작성
+  #
+  raw_data_dir: "raw_data"
+  cleaned_dir: "cleaned"
+  preprocessed_dir: "preprocessed"
+  jobs_dir: "jobs"
+
+processing:
+  num_workers: 4
+  batch_size: 100
+  log_level: "INFO"
+
+defaults:
+  image:
+    target_size: [640, 640]
+    interpolation: "area"
+    padding_color: [114, 114, 114]
+    allowed_formats: ["jpg", "jpeg", "png", "bmp", "tiff", "webp"]
+  validation:
+    min_resolution: [32, 32]
+    max_file_size_mb: 100
+    check_integrity: true
+  deduplication:
+    method: "phash"
+    hash_size: 16
+    threshold: 5
+  quality:
+    min_blur_score: 100.0
+    min_brightness: 20
+    max_brightness: 235
+  split:
+    ratios:
+      train: 0.8
+      val: 0.15
+      test: 0.05
+    seed: 42

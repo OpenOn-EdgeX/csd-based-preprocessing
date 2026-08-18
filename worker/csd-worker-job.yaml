@@ -1,0 +1,93 @@
+# Real CSD preprocessing worker Job (Tail shard on the CSD node).
+#
+# Placeholders — 수동으로 채워서 kubectl apply 한다 (렌더링 스크립트는 2026-07-28 삭제):
+#   {{BATCH_ID}}              e.g. tail-csd
+#   {{BATCH_MANIFEST_JSON}}   {"batchId":"tail-csd","worker":"CSD","files":[...]}
+#   {{DATA_HOST_PATH}}        shared input images dir on the CSD node (read-only)
+#   {{OUTPUT_HOST_PATH}}      shared output root (per-shard records/result)
+#   {{DATASET_HOST_PATH}}     shared result dataset root (images co-located)
+#
+# Before use on hardware:
+#   - build & load image on the CSD node:  docker build -t csd-preprocessor:latest .
+#     (k8s는 containerd 사용: docker save csd-preprocessor:latest | ctr -n k8s.io images import -)
+#   - set nodeSelector to the CSD node's kubernetes.io/hostname
+#     (노드 재조인으로 이름이 바뀌면 여기도 갱신 필요 — 현재 gpu-npu-server-02, 구 edge-gpu-232)
+#   - namespace/SA/quota는 preprocess-csd 격리 체계를 따른다 (/root/preprocess-isolation/)
+#   - confirm the host paths exist and are writable (OCFS2 shared mount)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: csd-worker-{{BATCH_ID}}
+  namespace: preprocess-csd
+  labels:
+    app: csd-worker
+    part: preprocess-csd
+spec:
+  backoffLimit: 1
+  completions: 1
+  parallelism: 1
+  template:
+    metadata:
+      labels:
+        app: csd-worker
+        part: preprocess-csd
+    spec:
+      serviceAccountName: preprocess-admin
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 30
+      nodeSelector:
+        kubernetes.io/hostname: gpu-npu-server-02
+      containers:
+        - name: csd-worker
+          image: csd-preprocessor:latest
+          imagePullPolicy: Never
+          command: ["python"]
+          args: ["worker/csd_worker.py"]
+          terminationMessagePolicy: File
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          env:
+            - name: BATCH_MANIFEST_JSON
+              value: "{{BATCH_MANIFEST_JSON}}"
+            - name: DATA_PATH
+              value: /data
+            - name: OUTPUT_DIR
+              value: /output/{{BATCH_ID}}
+            - name: DATASET_DIR
+              value: /dataset
+            - name: OUTPUT_HOST_DIR
+              value: "{{OUTPUT_HOST_PATH}}/{{BATCH_ID}}"
+            - name: WORKER_TYPE
+              value: CSD
+            - name: BATCH_ID
+              value: "{{BATCH_ID}}"
+            # PreprocessingJob spec.preprocessing_steps 와 동일한 목록.
+            # 컨트롤러 경유 시에는 자동 주입되므로 수동 실행에서만 채운다.
+            - name: PREPROCESSING_STEPS
+              value: '["resize","normalize","phash"]'
+          volumeMounts:
+            - name: input-data
+              mountPath: /data
+              readOnly: true
+            - name: output-data
+              mountPath: /output
+            - name: dataset-data
+              mountPath: /dataset
+      volumes:
+        - name: input-data
+          hostPath:
+            path: "{{DATA_HOST_PATH}}"
+            type: Directory
+        - name: output-data
+          hostPath:
+            path: "{{OUTPUT_HOST_PATH}}"
+            type: DirectoryOrCreate
+        - name: dataset-data
+          hostPath:
+            path: "{{DATASET_HOST_PATH}}"
+            type: DirectoryOrCreate

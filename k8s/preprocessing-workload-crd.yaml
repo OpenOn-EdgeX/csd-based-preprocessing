@@ -1,0 +1,190 @@
+# PreprocessingWorkload — 스케줄러 → 전처리 매니저 인터페이스 CRD (DRAFT)
+#
+# ★ 스케줄러 파트의 정식 스펙 확정 전 예상 스펙 기반 draft.
+#   확정되면 이 CRD 필드와 매니저(controller/preprocess_manager.py)의
+#   매핑 부분만 조정한다.
+#
+# 흐름:
+#   스케줄러 ──생성──▶ PreprocessingWorkload (spec.placement = 스케줄러 바인딩 결과)
+#   전처리 매니저 ──watch──▶ 분할계획 수립 → PreprocessingJob 생성, status 역전파
+#   전처리 실행엔진 ──watch──▶ PreprocessingJob 실행 (워커 디스패치·결과 집계)
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: preprocessingworkloads.edgeai.keti.re.kr
+spec:
+  group: edgeai.keti.re.kr
+  scope: Namespaced
+  names:
+    kind: PreprocessingWorkload
+    listKind: PreprocessingWorkloadList
+    plural: preprocessingworkloads
+    singular: preprocessingworkload
+    shortNames:
+      - pw
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: PHASE
+          type: string
+          jsonPath: .status.phase
+        - name: STAGE
+          type: string
+          jsonPath: .status.stage
+        - name: PROGRESS
+          type: string
+          jsonPath: .status.progress_ratio
+        - name: PJOB
+          type: string
+          jsonPath: .status.preprocessing_job
+        - name: AGE
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [workload]
+              properties:
+                workload:
+                  type: object
+                  required: [dataset]
+                  properties:
+                    dataset:
+                      type: object
+                      required: [inputPath]
+                      properties:
+                        inputPath:
+                          type: string
+                        outputPath:
+                          type: string
+                        labelPath:
+                          type: string
+                          description: |
+                            어노테이션 디렉터리 (stage2 입력). 라벨링 완료 후 지정한다.
+                            비어 있으면 매니저 설정(ALLOW_PLACEHOLDER_LABELS)에 따라
+                            임시 라벨로 stage2 배선만 통과시킨다 — 학습용 아님.
+                        totalSamples:
+                          type: integer
+                          minimum: 0
+                    waitForLabels:
+                      type: boolean
+                      description: |
+                        stage1 완료 후 어노테이션이 도착할 때까지 stage2 를 대기시킬지.
+                        생략 시 매니저 기본값(WAIT_FOR_LABELS=true). false 로 두면
+                        라벨이 없을 때 임시 라벨로 바로 진행한다(학습용 아님).
+                    stage2Template:
+                      type: string
+                      description: |
+                        라벨링 이후 단계 템플릿 (기본 stage2_training_preparation).
+                        "none" 이면 stage2 를 건너뛴다.
+                    pipelineTemplate:
+                      type: string
+                      description: |
+                        전처리 파이프라인 템플릿 이름 (config/pipeline_templates/<name>.yaml).
+                        생략 시 매니저 기본값(DEFAULT_PIPELINE_TEMPLATE=stage1_raw_ingestion).
+                        스케줄러는 스텝을 하나하나 고를 필요 없이 이 이름만 주면 된다.
+                    stages:
+                      type: object
+                      description: |
+                        (선택) 스텝을 직접 나열하는 경우에만 사용 — 예:
+                        {stage1: [validate, ...], stage2: [convert, ...]}. 지정하면
+                        pipelineTemplate 대신 이 목록이 쓰이고 params 는 워커 기본값이
+                        되므로, 서버 경로와 동일한 설정을 원하면 pipelineTemplate 를 쓴다.
+                      x-kubernetes-preserve-unknown-fields: true
+                    slo:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                          enum: [THROUGHPUT, LATENCY]
+                        target:
+                          type: number
+                    algorithm:
+                      type: string
+                      description: >
+                        분할 알고리즘. 미지정 시 매니저 기본값(DEFAULT_ALGORITHM).
+                        AUTO = 워크로드 특성으로 자동 선택 — 소규모 데이터셋이거나
+                        CPU/CSD 성능 차가 작으면 MTE, 대규모이고 성능 비율 편차가
+                        크면 WRR. 판단 근거는
+                        status.partition_plan.basis.algorithm_selection 에 남는다.
+                      enum: [AUTO, STATIC, MTE, WRR]
+                    throughput:
+                      type: object
+                      description: >
+                        사전 측정 처리량(samples/sec) — MTE/WRR 분할계획 입력.
+                        측정 프로파일이 쌓이면(throughputSource=auto 기본) 실측치가
+                        우선하고, 이 값은 프로파일이 없을 때의 초기값으로만 쓰인다.
+                      properties:
+                        cpu:
+                          type: number
+                          minimum: 0
+                        csd:
+                          type: number
+                          minimum: 0
+                    throughputSource:
+                      type: string
+                      description: >
+                        처리량 입력 출처. auto(기본) = 완료 잡에서 자동 측정한
+                        프로파일 우선, 없으면 throughput 값 사용.
+                        spec = 이 CR 의 throughput 값을 강제(측정은 계속 기록된다).
+                      enum: [auto, spec]
+                    weights:
+                      type: object
+                      description: WRR 정수 가중치. 미지정 시 throughput 비율에서 유도.
+                      properties:
+                        cpu:
+                          type: integer
+                          minimum: 1
+                        csd:
+                          type: integer
+                          minimum: 1
+                placement:
+                  type: object
+                  description: 스케줄러 바인딩 결과.
+                  properties:
+                    nodeId:
+                      type: string
+                    csdId:
+                      type: string
+                    cpuCores:
+                      type: integer
+                    memMb:
+                      type: integer
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Pending, Planning, Dispatched, Running, Succeeded, Failed]
+                stage:
+                  type: string
+                  description: 실행 엔진이 보고한 현재 단계 (shards | waiting_labels | stage2)
+                  enum: [shards, waiting_labels, stage2]
+                progress_ratio:
+                  type: number
+                preprocessing_job:
+                  type: string
+                  description: 매니저가 생성한 PreprocessingJob 이름.
+                partition_plan:
+                  type: object
+                  description: 매니저가 수립한 분할계획 사본(감사용).
+                  x-kubernetes-preserve-unknown-fields: true
+                measured_throughput:
+                  type: object
+                  description: >
+                    완료 후 샤드 result.json 에서 측정한 실제 처리량과 프로파일
+                    반영 결과. status=measured|unavailable|not_recorded.
+                    이 필드가 채워지면 측정이 1회 수행된 것이다(재시도 방지).
+                  x-kubernetes-preserve-unknown-fields: true
+                error_message:
+                  type: string
+                updated_at:
+                  type: string
