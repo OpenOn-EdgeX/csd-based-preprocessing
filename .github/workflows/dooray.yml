@@ -1,0 +1,71 @@
+name: Dooray Notification
+
+on:
+  issues:
+    types: [opened, closed]
+  pull_request:
+    types: [opened, closed]
+  push:
+    branches: [main]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send to Dooray
+        env:
+          HOOK: ${{ secrets.DOORAY_HOOK }}
+          REPO: ${{ github.event.repository.name }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          ACTOR: ${{ github.actor }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          ISSUE_NUM: ${{ github.event.issue.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          MERGED: ${{ github.event.pull_request.merged }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          COMMIT_URL: ${{ github.event.head_commit.url }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          case "$EVENT" in
+            issues)
+              SUBJECT="Issue #${ISSUE_NUM}"
+              TITLE="$ISSUE_TITLE"
+              URL="$ISSUE_URL"
+              [ "$ACTION" = "opened" ] && STATUS="Opened" || STATUS="Closed"
+              ;;
+            pull_request)
+              SUBJECT="Pull request #${PR_NUM}"
+              TITLE="$PR_TITLE"
+              URL="$PR_URL"
+              if [ "$ACTION" = "opened" ]; then
+                STATUS="Opened"
+              elif [ "$MERGED" = "true" ]; then
+                STATUS="Merged"
+              else
+                STATUS="Closed"
+              fi
+              ;;
+            push)
+              SUBJECT="Push to ${BRANCH}"
+              TITLE=$(printf '%s' "$COMMIT_MSG" | head -n 1)
+              URL="$COMMIT_URL"
+              STATUS="Updated"
+              ;;
+          esac
+
+          jq -n \
+            --arg repo "$REPO" \
+            --arg subject "$SUBJECT" \
+            --arg status "$STATUS" \
+            --arg title "$TITLE" \
+            --arg actor "$ACTOR" \
+            --arg url "$URL" \
+            '{
+               botName: "GitHub",
+               text: "**\($repo)** — \($subject) \($status)\n\($title)\nby \($actor)\n\($url)"
+             }' \
+          | curl -sS -X POST "$HOOK" -H 'Content-Type: application/json' -d @-
